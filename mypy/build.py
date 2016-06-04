@@ -1385,10 +1385,6 @@ def process_scc(
         output_callback: Callable[[BuildManager], None]) -> None:
     """Given a strongly connected compnent run the type checker on the entire component.
 
-    NOTE: part of why this function is here rather than all in process_graph is for
-        ease of testing. Making them separate functions makes wrapping the start and
-        end of processing a strongly connected component easier.
-
     Returns: None, modifies the internal state of the passed in manager.
 
     Args:
@@ -1484,7 +1480,16 @@ def process_graph(
         graph: Graph,
         manager: BuildManager,
         output_callback: Callable[[BuildManager], None]) -> None:
-    """Process everything in dependency order."""
+    """Process everything in dependency order.
+
+    Returns: None, modifies the internal state of the passed in manager.
+
+    Args:
+        graph: The Entire dependency graph
+        manager: State object that holds all processed output
+        output_callback: A callback that's called at the end of processing who's job is
+            to stream output to a source (normal stdout).
+    """
     sccs = sorted_components(graph)
     manager.log("Found %d SCCs; largest has %d nodes" %
                 (len(sccs), max(len(scc) for scc in sccs)))

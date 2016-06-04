@@ -3,14 +3,15 @@
 import os.path
 import re
 import shutil
+import io
 import sys
-from unittest import mock
 
 from typing import Tuple, List, Dict, Set
 
 from mypy import build
 import mypy.myunit  # for mutable globals (ick!)
-from mypy.build import BuildSource, find_module_clear_caches, process_scc
+from mypy.main import flush_error_and_reset
+from mypy.build import BuildSource, find_module_clear_caches
 from mypy.myunit import Suite, AssertionFailure
 from mypy.test.config import test_temp_dir, test_data_prefix
 from mypy.test.data import parse_test_cases, DataDrivenTestCase
@@ -33,6 +34,7 @@ files = [
     'check-weak-typing.test',
     'check-functions.test',
     'check-inference.test',
+    'check-flush-output.test',
     'check-inference-context.test',
     'check-varargs.test',
     'check-kwargs.test',
@@ -110,18 +112,41 @@ class TypeCheckSuite(Suite):
                             target = full[:-5]
                             shutil.copy(full, target)
         source = BuildSource(program_name, module_name, program_text)
-        flush_output = 'flush-output' in testcase.name.lower() or 'flush-output' in testcase.file
+        flush_output = 'flushoutput' in testcase.name.lower()
         if flush_output:
-            pass
-            # Mock process_scc to write sentinal value
-                # Capture sys.stderr
-                    # run build.build with the normal paramaters
 
-                    # assert that we hit sentinal value
-                    # assert that we get B output
-                    # assert that we hit sentinal value
-                    # assert that we get A output
-                    # return None
+            def wrapped_callback(manager):
+                """Helper function that turns DUMP_INFER_STATS on in the manager
+                so that we can the stats dumps as a sentinal value about what processing
+                has been done before and after output is returned.
+                """
+                # We're going to use the inferred stats as a sential value.
+                manager.flags.append(build.DUMP_INFER_STATS)
+                flush_error_and_reset(manager)
+
+            # Capture sys.stderr
+            # TODO: turn redirct into a context manager.
+            old_stderr = sys.stderr
+            sys.stderr = mystderr = io.StringIO()
+
+            # Testing the standard call back from main.py
+            build.build(target=build.TYPE_CHECK,
+                        output_callback=wrapped_callback,
+                        sources=[source],
+                        pyversion=pyversion,
+                        flags=flags + [build.TEST_BUILTINS],
+                        alt_lib_path=test_temp_dir)
+
+            # assert that we hit DUMP_INFER_STATS output
+            raise AssertionFailure("testing")
+            assert mystderr
+            # assert that we get B output
+            # assert that we hit DUMP_INFER_STATS output
+            # assert that we get A output
+
+            sys.stderr = old_stderr
+            # return None
+
         try:
             # Avoding a MYPY bug (issue 1425)
             def do_nothing(manager):
