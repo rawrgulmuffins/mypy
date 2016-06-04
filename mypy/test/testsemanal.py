@@ -16,6 +16,10 @@ from mypy.errors import CompileError
 from mypy.nodes import TypeInfo
 
 
+# Used in build.build to avoid mypy issue 1425
+def do_nothing(manager):
+    pass
+
 # Semantic analyzer test cases: dump parse tree
 
 # Semantic analysis test case description files.
@@ -50,6 +54,7 @@ def test_semanal(testcase):
     try:
         src = '\n'.join(testcase.input)
         result = build.build(target=build.SEMANTIC_ANALYSIS,
+                             output_callback=do_nothing,
                              sources=[BuildSource('main', None, src)],
                              pyversion=testfile_pyversion(testcase.file),
                              flags=[build.TEST_BUILTINS],
@@ -101,6 +106,7 @@ def test_semanal_error(testcase):
     try:
         src = '\n'.join(testcase.input)
         res = build.build(target=build.SEMANTIC_ANALYSIS,
+                          output_callback=do_nothing,
                           sources=[BuildSource('main', None, src)],
                           flags=[build.TEST_BUILTINS],
                           alt_lib_path=test_temp_dir)
@@ -135,6 +141,7 @@ class SemAnalSymtableSuite(Suite):
             # Build test case input.
             src = '\n'.join(testcase.input)
             result = build.build(target=build.SEMANTIC_ANALYSIS,
+                                 output_callback=do_nothing,
                                  sources=[BuildSource('main', None, src)],
                                  flags=[build.TEST_BUILTINS],
                                  alt_lib_path=test_temp_dir)
@@ -175,6 +182,7 @@ class SemAnalTypeInfoSuite(Suite):
             # Build test case input.
             src = '\n'.join(testcase.input)
             result = build.build(target=build.SEMANTIC_ANALYSIS,
+                                 output_callback=do_nothing,
                                  sources=[BuildSource('main', None, src)],
                                  flags=[build.TEST_BUILTINS],
                                  alt_lib_path=test_temp_dir)

@@ -65,6 +65,29 @@ def main(script_path: str) -> None:
         sys.exit(1)
 
 
+def flush_error_and_reset(target_manager):
+    """Callback function which is used to report the result of type errors found by MYPY after
+    finishing a strong connnected component.
+
+    Rather than waiting for all processing to be done this function is used to report results
+    after a subset of processing is done so that you don't have to wait until everything is
+    finished to see results.
+
+    Return: Nothing
+
+    Args:
+        target_manager: The manager object that is used internally in MYPY to track what errors
+            have been found.
+            NOTE: this object will be modified by this function so that errors aren't reported
+                twice
+    """
+    pass
+    # BuildResult(current_manager)
+    # call check_blockers
+    # print all errors in current_manager)
+    # current_manager.errors = Error()
+
+
 def find_bin_directory(script_path: str) -> str:
     """Find the directory that contains this script.
 
@@ -93,6 +116,7 @@ def type_check_only(sources: List[BuildSource],
         bin_dir: str, options: Options) -> BuildResult:
     # Type-check the program and dependencies and translate to Python.
     return build.build(sources=sources,
+                       output_callback=flush_error_and_reset,
                        target=build.TYPE_CHECK,
                        bin_dir=bin_dir,
                        pyversion=options.pyversion,

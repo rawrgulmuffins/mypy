@@ -21,7 +21,7 @@ import time
 from os.path import dirname, basename
 
 from typing import (AbstractSet, Dict, Iterable, Iterator, List,
-                    NamedTuple, Optional, Set, Tuple, Union)
+                    NamedTuple, Optional, Set, Tuple, Union, Callable)
 
 from mypy.types import Type
 from mypy.nodes import (MypyFile, Node, Import, ImportFrom, ImportAll,
@@ -81,9 +81,9 @@ class BuildResult:
     """
 
     def __init__(self, manager: 'BuildManager') -> None:
-        self.manager = manager
-        self.files = manager.modules
-        self.types = manager.type_checker.type_map
+        self.manager = manager  # This is only used for testing
+        self.files = manager.modules  # This is only used for testing
+        self.types = manager.type_checker.type_map  # This is only used for testing
         self.errors = manager.errors.messages()
 
 
@@ -125,206 +125,6 @@ class BuildSourceSet:
             return True
         else:
             return False
-
-
-def build(sources: List[BuildSource],
-          target: int,
-          alt_lib_path: str = None,
-          bin_dir: str = None,
-          pyversion: Tuple[int, int] = defaults.PYTHON3_VERSION,
-          custom_typing_module: str = None,
-          report_dirs: Dict[str, str] = None,
-          flags: List[str] = None,
-          python_path: bool = False) -> BuildResult:
-    """Analyze a program.
-
-    A single call to build performs parsing, semantic analysis and optionally
-    type checking for the program *and* all imported modules, recursively.
-
-    Return BuildResult if successful or only non-blocking errors were found;
-    otherwise raise CompileError.
-
-    Args:
-      target: select passes to perform (a build target constant, e.g. C)
-      sources: list of sources to build
-      alt_lib_path: an additional directory for looking up library modules
-        (takes precedence over other directories)
-      bin_dir: directory containing the mypy script, used for finding data
-        directories; if omitted, use '.' as the data directory
-      pyversion: Python version (major, minor)
-      custom_typing_module: if not None, use this module id as an alias for typing
-      flags: list of build options (e.g. COMPILE_ONLY)
-    """
-    report_dirs = report_dirs or {}
-    flags = flags or []
-
-    data_dir = default_data_dir(bin_dir)
-
-    find_module_clear_caches()
-
-    # Determine the default module search path.
-    lib_path = default_lib_path(data_dir, pyversion, python_path)
-
-    if TEST_BUILTINS in flags:
-        # Use stub builtins (to speed up test cases and to make them easier to
-        # debug).
-        lib_path.insert(0, os.path.join(os.path.dirname(__file__), 'test', 'data', 'lib-stub'))
-    else:
-        for source in sources:
-            if source.path:
-                # Include directory of the program file in the module search path.
-                dir = remove_cwd_prefix_from_path(dirname(source.path))
-                if dir not in lib_path:
-                    lib_path.insert(0, dir)
-
-        # Do this even if running as a file, for sanity (mainly because with
-        # multiple builds, there could be a mix of files/modules, so its easier
-        # to just define the semantics that we always add the current director
-        # to the lib_path
-        lib_path.insert(0, os.getcwd())
-
-    # Add MYPYPATH environment variable to front of library path, if defined.
-    lib_path[:0] = mypy_path()
-
-    # If provided, insert the caller-supplied extra module path to the
-    # beginning (highest priority) of the search path.
-    if alt_lib_path:
-        lib_path.insert(0, alt_lib_path)
-
-    reports = Reports(data_dir, report_dirs)
-
-    source_set = BuildSourceSet(sources)
-
-    # Construct a build manager object to hold state during the build.
-    #
-    # Ignore current directory prefix in error messages.
-    manager = BuildManager(data_dir, lib_path, target,
-                           pyversion=pyversion, flags=flags,
-                           ignore_prefix=os.getcwd(),
-                           custom_typing_module=custom_typing_module,
-                           source_set=source_set,
-                           reports=reports)
-
-    try:
-        dispatch(sources, manager)
-        return BuildResult(manager)
-    finally:
-        manager.log("Build finished with %d modules, %d types, and %d errors" %
-                    (len(manager.modules),
-                     len(manager.type_checker.type_map),
-                     manager.errors.num_messages()))
-        # Finish the HTML or XML reports even if CompileError was raised.
-        reports.finish()
-
-
-def default_data_dir(bin_dir: str) -> str:
-    """Returns directory containing typeshed directory
-
-    Args:
-      bin_dir: directory containing the mypy script
-    """
-    if not bin_dir:
-        mypy_package = os.path.dirname(__file__)
-        parent = os.path.dirname(mypy_package)
-        if (os.path.basename(parent) == 'site-packages' or
-                os.path.basename(parent) == 'dist-packages'):
-            # Installed in site-packages or dist-packages, but invoked with python3 -m mypy;
-            # __file__ is .../blah/lib/python3.N/site-packages/mypy/build.py
-            # or .../blah/lib/python3.N/dist-packages/mypy/build.py (Debian)
-            # or .../blah/lib/site-packages/mypy/build.py (Windows)
-            # blah may be a virtualenv or /usr/local.  We want .../blah/lib/mypy.
-            lib = parent
-            for i in range(2):
-                lib = os.path.dirname(lib)
-                if os.path.basename(lib) == 'lib':
-                    return os.path.join(lib, 'mypy')
-        subdir = os.path.join(parent, 'lib', 'mypy')
-        if os.path.isdir(subdir):
-            # If installed via buildout, the __file__ is
-            # somewhere/mypy/__init__.py and what we want is
-            # somewhere/lib/mypy.
-            return subdir
-        # Default to directory containing this file's parent.
-        return parent
-    base = os.path.basename(bin_dir)
-    dir = os.path.dirname(bin_dir)
-    if (sys.platform == 'win32' and base.lower() == 'scripts'
-            and not os.path.isdir(os.path.join(dir, 'typeshed'))):
-        # Installed, on Windows.
-        return os.path.join(dir, 'Lib', 'mypy')
-    elif base == 'scripts':
-        # Assume that we have a repo check out or unpacked source tarball.
-        return dir
-    elif base == 'bin':
-        # Installed to somewhere (can be under /usr/local or anywhere).
-        return os.path.join(dir, 'lib', 'mypy')
-    elif base == 'python3':
-        # Assume we installed python3 with brew on os x
-        return os.path.join(os.path.dirname(dir), 'lib', 'mypy')
-    elif dir.endswith('python-exec'):
-        # Gentoo uses a python wrapper in /usr/lib to which mypy is a symlink.
-        return os.path.join(os.path.dirname(dir), 'mypy')
-    else:
-        # Don't know where to find the data files!
-        raise RuntimeError("Broken installation: can't determine base dir")
-
-
-def mypy_path() -> List[str]:
-    path_env = os.getenv('MYPYPATH')
-    if not path_env:
-        return []
-    return path_env.split(os.pathsep)
-
-
-def default_lib_path(data_dir: str, pyversion: Tuple[int, int],
-        python_path: bool) -> List[str]:
-    """Return default standard library search paths."""
-    # IDEA: Make this more portable.
-    path = []  # type: List[str]
-
-    auto = os.path.join(data_dir, 'stubs-auto')
-    if os.path.isdir(auto):
-        data_dir = auto
-
-    # We allow a module for e.g. version 3.5 to be in 3.4/. The assumption
-    # is that a module added with 3.4 will still be present in Python 3.5.
-    versions = ["%d.%d" % (pyversion[0], minor)
-                for minor in reversed(range(pyversion[1] + 1))]
-    # E.g. for Python 3.2, try 3.2/, 3.1/, 3.0/, 3/, 2and3/.
-    # (Note that 3.1 and 3.0 aren't really supported, but we don't care.)
-    for v in versions + [str(pyversion[0]), '2and3']:
-        for lib_type in ['stdlib', 'third_party']:
-            stubdir = os.path.join(data_dir, 'typeshed', lib_type, v)
-            if os.path.isdir(stubdir):
-                path.append(stubdir)
-
-    # Add fallback path that can be used if we have a broken installation.
-    if sys.platform != 'win32':
-        path.append('/usr/local/lib/mypy')
-
-    # Contents of Python's sys.path go last, to prefer the stubs
-    # TODO: To more closely model what Python actually does, builtins should
-    #       go first, then sys.path, then anything in stdlib and third_party.
-    if python_path:
-        path.extend(sys.path)
-
-    return path
-
-
-CacheMeta = NamedTuple('CacheMeta',
-                       [('id', str),
-                        ('path', str),
-                        ('mtime', float),
-                        ('size', int),
-                        ('dependencies', List[str]),  # names of imported modules
-                        ('data_mtime', float),  # mtime of data_json
-                        ('data_json', str),  # path of <id>.data.json
-                        ('suppressed', List[str]),  # dependencies that weren't imported
-                        ('flags', Optional[List[str]]),  # build flags
-                        ])
-# NOTE: dependencies + suppressed == all unreachable imports;
-# suppressed contains those reachable imports that were prevented by
-# --silent-imports or simply not found.
 
 
 class BuildManager:
@@ -483,6 +283,208 @@ class BuildManager:
         if self.flags.count(VERBOSE) >= 2:
             print('%.3f:TRACE:' % (time.time() - self.start_time), *message, file=sys.stderr)
             sys.stderr.flush()
+
+
+def build(sources: List[BuildSource],
+          target: int,
+          output_callback: Callable[[BuildManager], None],
+          alt_lib_path: str = None,
+          bin_dir: str = None,
+          pyversion: Tuple[int, int] = defaults.PYTHON3_VERSION,
+          custom_typing_module: str = None,
+          report_dirs: Dict[str, str] = None,
+          flags: List[str] = None,
+          python_path: bool = False,) -> BuildResult:
+    """Analyze a program.
+
+    A single call to build performs parsing, semantic analysis and optionally
+    type checking for the program *and* all imported modules, recursively.
+
+    Return BuildResult if successful or only non-blocking errors were found;
+    otherwise raise CompileError.
+
+    Args:
+      target: select passes to perform (a build target constant, e.g. C)
+      output_callback: TODO: finish this doc string.
+      sources: list of sources to build
+      alt_lib_path: an additional directory for looking up library modules
+        (takes precedence over other directories)
+      bin_dir: directory containing the mypy script, used for finding data
+        directories; if omitted, use '.' as the data directory
+      pyversion: Python version (major, minor)
+      custom_typing_module: if not None, use this module id as an alias for typing
+      flags: list of build options (e.g. COMPILE_ONLY)
+    """
+    report_dirs = report_dirs or {}
+    flags = flags or []
+
+    data_dir = default_data_dir(bin_dir)
+
+    find_module_clear_caches()
+
+    # Determine the default module search path.
+    lib_path = default_lib_path(data_dir, pyversion, python_path)
+
+    if TEST_BUILTINS in flags:
+        # Use stub builtins (to speed up test cases and to make them easier to
+        # debug).
+        lib_path.insert(0, os.path.join(os.path.dirname(__file__), 'test', 'data', 'lib-stub'))
+    else:
+        for source in sources:
+            if source.path:
+                # Include directory of the program file in the module search path.
+                dir = remove_cwd_prefix_from_path(dirname(source.path))
+                if dir not in lib_path:
+                    lib_path.insert(0, dir)
+
+        # Do this even if running as a file, for sanity (mainly because with
+        # multiple builds, there could be a mix of files/modules, so its easier
+        # to just define the semantics that we always add the current director
+        # to the lib_path
+        lib_path.insert(0, os.getcwd())
+
+    # Add MYPYPATH environment variable to front of library path, if defined.
+    lib_path[:0] = mypy_path()
+
+    # If provided, insert the caller-supplied extra module path to the
+    # beginning (highest priority) of the search path.
+    if alt_lib_path:
+        lib_path.insert(0, alt_lib_path)
+
+    reports = Reports(data_dir, report_dirs)
+
+    source_set = BuildSourceSet(sources)
+
+    # Construct a build manager object to hold state during the build.
+    #
+    # Ignore current directory prefix in error messages.
+    manager = BuildManager(data_dir, lib_path, target,
+                           pyversion=pyversion, flags=flags,
+                           ignore_prefix=os.getcwd(),
+                           custom_typing_module=custom_typing_module,
+                           source_set=source_set,
+                           reports=reports)
+
+    try:
+        dispatch(sources, manager, output_callback)
+        return BuildResult(manager)
+    finally:
+        manager.log("Build finished with %d modules, %d types, and %d errors" %
+                    (len(manager.modules),
+                     len(manager.type_checker.type_map),
+                     manager.errors.num_messages()))
+        # Finish the HTML or XML reports even if CompileError was raised.
+        reports.finish()
+
+
+def default_data_dir(bin_dir: str) -> str:
+    """Returns directory containing typeshed directory
+
+    Args:
+      bin_dir: directory containing the mypy script
+    """
+    if not bin_dir:
+        mypy_package = os.path.dirname(__file__)
+        parent = os.path.dirname(mypy_package)
+        if (os.path.basename(parent) == 'site-packages' or
+                os.path.basename(parent) == 'dist-packages'):
+            # Installed in site-packages or dist-packages, but invoked with python3 -m mypy;
+            # __file__ is .../blah/lib/python3.N/site-packages/mypy/build.py
+            # or .../blah/lib/python3.N/dist-packages/mypy/build.py (Debian)
+            # or .../blah/lib/site-packages/mypy/build.py (Windows)
+            # blah may be a virtualenv or /usr/local.  We want .../blah/lib/mypy.
+            lib = parent
+            for i in range(2):
+                lib = os.path.dirname(lib)
+                if os.path.basename(lib) == 'lib':
+                    return os.path.join(lib, 'mypy')
+        subdir = os.path.join(parent, 'lib', 'mypy')
+        if os.path.isdir(subdir):
+            # If installed via buildout, the __file__ is
+            # somewhere/mypy/__init__.py and what we want is
+            # somewhere/lib/mypy.
+            return subdir
+        # Default to directory containing this file's parent.
+        return parent
+    base = os.path.basename(bin_dir)
+    dir = os.path.dirname(bin_dir)
+    if (sys.platform == 'win32' and base.lower() == 'scripts'
+            and not os.path.isdir(os.path.join(dir, 'typeshed'))):
+        # Installed, on Windows.
+        return os.path.join(dir, 'Lib', 'mypy')
+    elif base == 'scripts':
+        # Assume that we have a repo check out or unpacked source tarball.
+        return dir
+    elif base == 'bin':
+        # Installed to somewhere (can be under /usr/local or anywhere).
+        return os.path.join(dir, 'lib', 'mypy')
+    elif base == 'python3':
+        # Assume we installed python3 with brew on os x
+        return os.path.join(os.path.dirname(dir), 'lib', 'mypy')
+    elif dir.endswith('python-exec'):
+        # Gentoo uses a python wrapper in /usr/lib to which mypy is a symlink.
+        return os.path.join(os.path.dirname(dir), 'mypy')
+    else:
+        # Don't know where to find the data files!
+        raise RuntimeError("Broken installation: can't determine base dir")
+
+
+def mypy_path() -> List[str]:
+    path_env = os.getenv('MYPYPATH')
+    if not path_env:
+        return []
+    return path_env.split(os.pathsep)
+
+
+def default_lib_path(data_dir: str, pyversion: Tuple[int, int],
+        python_path: bool) -> List[str]:
+    """Return default standard library search paths."""
+    # IDEA: Make this more portable.
+    path = []  # type: List[str]
+
+    auto = os.path.join(data_dir, 'stubs-auto')
+    if os.path.isdir(auto):
+        data_dir = auto
+
+    # We allow a module for e.g. version 3.5 to be in 3.4/. The assumption
+    # is that a module added with 3.4 will still be present in Python 3.5.
+    versions = ["%d.%d" % (pyversion[0], minor)
+                for minor in reversed(range(pyversion[1] + 1))]
+    # E.g. for Python 3.2, try 3.2/, 3.1/, 3.0/, 3/, 2and3/.
+    # (Note that 3.1 and 3.0 aren't really supported, but we don't care.)
+    for v in versions + [str(pyversion[0]), '2and3']:
+        for lib_type in ['stdlib', 'third_party']:
+            stubdir = os.path.join(data_dir, 'typeshed', lib_type, v)
+            if os.path.isdir(stubdir):
+                path.append(stubdir)
+
+    # Add fallback path that can be used if we have a broken installation.
+    if sys.platform != 'win32':
+        path.append('/usr/local/lib/mypy')
+
+    # Contents of Python's sys.path go last, to prefer the stubs
+    # TODO: To more closely model what Python actually does, builtins should
+    #       go first, then sys.path, then anything in stdlib and third_party.
+    if python_path:
+        path.extend(sys.path)
+
+    return path
+
+
+CacheMeta = NamedTuple('CacheMeta',
+                       [('id', str),
+                        ('path', str),
+                        ('mtime', float),
+                        ('size', int),
+                        ('dependencies', List[str]),  # names of imported modules
+                        ('data_mtime', float),  # mtime of data_json
+                        ('data_json', str),  # path of <id>.data.json
+                        ('suppressed', List[str]),  # dependencies that weren't imported
+                        ('flags', Optional[List[str]]),  # build flags
+                        ])
+# NOTE: dependencies + suppressed == all unreachable imports;
+# suppressed contains those reachable imports that were prevented by
+# --silent-imports or simply not found.
 
 
 def remove_cwd_prefix_from_path(p: str) -> str:
@@ -1322,11 +1324,14 @@ class State:
 Graph = Dict[str, State]
 
 
-def dispatch(sources: List[BuildSource], manager: BuildManager) -> None:
+def dispatch(
+        sources: List[BuildSource],
+        manager: BuildManager,
+        output_callback: Callable[[BuildManager], None]) -> None:
     manager.log("Using new dependency manager")
     graph = load_graph(sources, manager)
     manager.log("Loaded graph with %d nodes" % len(graph))
-    process_graph(graph, manager)
+    process_graph(graph, manager, output_callback)
 
 
 def load_graph(sources: List[BuildSource], manager: BuildManager) -> Graph:
@@ -1373,7 +1378,10 @@ def load_graph(sources: List[BuildSource], manager: BuildManager) -> Graph:
     return graph
 
 
-def process_graph(graph: Graph, manager: BuildManager) -> None:
+def process_graph(
+        graph: Graph,
+        manager: BuildManager,
+        output_callback: Callable[[BuildManager], None]) -> None:
     """Process everything in dependency order."""
     sccs = sorted_components(graph)
     manager.log("Found %d SCCs; largest has %d nodes" %
@@ -1458,6 +1466,9 @@ def process_graph(graph: Graph, manager: BuildManager) -> None:
             process_fresh_scc(graph, scc)
         else:
             process_stale_scc(graph, scc)
+
+        # Call output callback function here
+        output_callback(manager)
 
 
 def process_fresh_scc(graph: Graph, scc: List[str]) -> None:

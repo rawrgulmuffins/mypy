@@ -110,7 +110,11 @@ class TypeCheckSuite(Suite):
                             shutil.copy(full, target)
         source = BuildSource(program_name, module_name, program_text)
         try:
+            # Avoding a MYPY bug (issue 1425)
+            def do_nothing(manager):
+                pass
             res = build.build(target=build.TYPE_CHECK,
+                              output_callback=do_nothing,
                               sources=[source],
                               pyversion=pyversion,
                               flags=flags + [build.TEST_BUILTINS],

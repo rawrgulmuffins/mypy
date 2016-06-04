@@ -36,7 +36,12 @@ class TypeExportSuite(Suite):
                 mask = '(' + line[2:].strip() + ')$'
 
             src = '\n'.join(testcase.input)
+            # Used in build.build to avoid mypy issue 1425
+
+            def do_nothing(manager):
+                pass
             result = build.build(target=build.TYPE_CHECK,
+                                 output_callback=do_nothing,
                                  sources=[BuildSource('main', None, src)],
                                  flags=[build.TEST_BUILTINS],
                                  alt_lib_path=config.test_temp_dir)

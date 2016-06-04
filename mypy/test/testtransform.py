@@ -40,6 +40,7 @@ def test_transform(testcase):
     try:
         src = '\n'.join(testcase.input)
         result = build.build(target=build.SEMANTIC_ANALYSIS,
+                             output_callback=lambda manager: None,
                              sources=[BuildSource('main', None, src)],
                              pyversion=testfile_pyversion(testcase.file),
                              flags=[build.TEST_BUILTINS],
