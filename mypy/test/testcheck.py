@@ -4,12 +4,13 @@ import os.path
 import re
 import shutil
 import sys
+from unittest import mock
 
 from typing import Tuple, List, Dict, Set
 
 from mypy import build
 import mypy.myunit  # for mutable globals (ick!)
-from mypy.build import BuildSource, find_module_clear_caches
+from mypy.build import BuildSource, find_module_clear_caches, process_scc
 from mypy.myunit import Suite, AssertionFailure
 from mypy.test.config import test_temp_dir, test_data_prefix
 from mypy.test.data import parse_test_cases, DataDrivenTestCase
@@ -109,6 +110,18 @@ class TypeCheckSuite(Suite):
                             target = full[:-5]
                             shutil.copy(full, target)
         source = BuildSource(program_name, module_name, program_text)
+        flush_output = 'flush-output' in testcase.name.lower() or 'flush-output' in testcase.file
+        if flush_output:
+            pass
+            # Mock process_scc to write sentinal value
+                # Capture sys.stderr
+                    # run build.build with the normal paramaters
+
+                    # assert that we hit sentinal value
+                    # assert that we get B output
+                    # assert that we hit sentinal value
+                    # assert that we get A output
+                    # return None
         try:
             # Avoding a MYPY bug (issue 1425)
             def do_nothing(manager):
@@ -135,6 +148,8 @@ class TypeCheckSuite(Suite):
 
         if incremental and res:
             self.verify_cache(module_name, program_name, a, res.manager)
+
+        # TODO: add explicit return None
 
     def verify_cache(self, module_name: str, program_name: str, a: List[str],
                      manager: build.BuildManager) -> None:

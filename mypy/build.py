@@ -20,7 +20,7 @@ import sys
 import time
 from os.path import dirname, basename
 
-from typing import (AbstractSet, Dict, Iterable, Iterator, List,
+from typing import (AbstractSet, Any, Dict, Iterable, Iterator, List,
                     NamedTuple, Optional, Set, Tuple, Union, Callable)
 
 from mypy.types import Type
@@ -127,167 +127,9 @@ class BuildSourceSet:
             return False
 
 
-class BuildManager:
-    """This class holds shared state for building a mypy program.
-
-    It is used to coordinate parsing, import processing, semantic
-    analysis and type checking.  The actual build steps are carried
-    out by dispatch().
-
-    Attributes:
-      data_dir:        Mypy data directory (contains stubs)
-      target:          Build target; selects which passes to perform
-      lib_path:        Library path for looking up modules
-      modules:         Mapping of module ID to MypyFile (shared by the passes)
-      semantic_analyzer:
-                       Semantic analyzer, pass 2
-      semantic_analyzer_pass3:
-                       Semantic analyzer, pass 3
-      type_checker:    Type checker
-      errors:          Used for reporting all errors
-      pyversion:       Python version (major, minor)
-      flags:           Build options
-      missing_modules: Set of modules that could not be imported encountered so far
-    """
-
-    def __init__(self, data_dir: str,
-                 lib_path: List[str],
-                 target: int,
-                 pyversion: Tuple[int, int],
-                 flags: List[str],
-                 ignore_prefix: str,
-                 custom_typing_module: str,
-                 source_set: BuildSourceSet,
-                 reports: Reports) -> None:
-        self.start_time = time.time()
-        self.data_dir = data_dir
-        self.errors = Errors()
-        self.errors.set_ignore_prefix(ignore_prefix)
-        self.lib_path = tuple(lib_path)
-        self.target = target
-        self.pyversion = pyversion
-        self.flags = flags
-        self.custom_typing_module = custom_typing_module
-        self.source_set = source_set
-        self.reports = reports
-        check_untyped_defs = CHECK_UNTYPED_DEFS in self.flags
-        self.semantic_analyzer = SemanticAnalyzer(lib_path, self.errors,
-                                                  pyversion=pyversion,
-                                                  check_untyped_defs=check_untyped_defs)
-        self.modules = self.semantic_analyzer.modules
-        self.semantic_analyzer_pass3 = ThirdPass(self.modules, self.errors)
-        self.type_checker = TypeChecker(self.errors,
-                                        self.modules,
-                                        self.pyversion,
-                                        DISALLOW_UNTYPED_CALLS in self.flags,
-                                        DISALLOW_UNTYPED_DEFS in self.flags,
-                                        check_untyped_defs)
-        self.missing_modules = set()  # type: Set[str]
-
-    def all_imported_modules_in_file(self,
-                                     file: MypyFile) -> List[Tuple[str, int]]:
-        """Find all reachable import statements in a file.
-
-        Return list of tuples (module id, import line number) for all modules
-        imported in file.
-        """
-        def correct_rel_imp(imp: Union[ImportFrom, ImportAll]) -> str:
-            """Function to correct for relative imports."""
-            file_id = file.fullname()
-            rel = imp.relative
-            if rel == 0:
-                return imp.id
-            if os.path.basename(file.path).startswith('__init__.'):
-                rel -= 1
-            if rel != 0:
-                file_id = ".".join(file_id.split(".")[:-rel])
-            new_id = file_id + "." + imp.id if imp.id else file_id
-
-            return new_id
-
-        res = []  # type: List[Tuple[str, int]]
-        for imp in file.imports:
-            if not imp.is_unreachable:
-                if isinstance(imp, Import):
-                    for id, _ in imp.ids:
-                        res.append((id, imp.line))
-                elif isinstance(imp, ImportFrom):
-                    cur_id = correct_rel_imp(imp)
-                    pos = len(res)
-                    all_are_submodules = True
-                    # Also add any imported names that are submodules.
-                    for name, __ in imp.names:
-                        sub_id = cur_id + '.' + name
-                        if self.is_module(sub_id):
-                            res.append((sub_id, imp.line))
-                        else:
-                            all_are_submodules = False
-                    # If all imported names are submodules, don't add
-                    # cur_id as a dependency.  Otherwise (i.e., if at
-                    # least one imported name isn't a submodule)
-                    # cur_id is also a dependency, and we should
-                    # insert it *before* any submodules.
-                    if not all_are_submodules:
-                        res.insert(pos, ((cur_id, imp.line)))
-                elif isinstance(imp, ImportAll):
-                    res.append((correct_rel_imp(imp), imp.line))
-        return res
-
-    def is_module(self, id: str) -> bool:
-        """Is there a file in the file system corresponding to module id?"""
-        return find_module(id, self.lib_path) is not None
-
-    def parse_file(self, id: str, path: str, source: str) -> MypyFile:
-        """Parse the source of a file with the given name.
-
-        Raise CompileError if there is a parse error.
-        """
-        num_errs = self.errors.num_messages()
-        tree = parse(source, path, self.errors,
-                     pyversion=self.pyversion,
-                     custom_typing_module=self.custom_typing_module,
-                     fast_parser=FAST_PARSER in self.flags)
-        tree._fullname = id
-        if self.errors.num_messages() != num_errs:
-            self.log("Bailing due to parse errors")
-            self.errors.raise_error()
-        return tree
-
-    def module_not_found(self, path: str, line: int, id: str) -> None:
-        self.errors.set_file(path)
-        stub_msg = "(Stub files are from https://github.com/python/typeshed)"
-        if ((self.pyversion[0] == 2 and moduleinfo.is_py2_std_lib_module(id)) or
-                (self.pyversion[0] >= 3 and moduleinfo.is_py3_std_lib_module(id))):
-            self.errors.report(
-                line, "No library stub file for standard library module '{}'".format(id))
-            self.errors.report(line, stub_msg, severity='note', only_once=True)
-        elif moduleinfo.is_third_party_module(id):
-            self.errors.report(line, "No library stub file for module '{}'".format(id))
-            self.errors.report(line, stub_msg, severity='note', only_once=True)
-        else:
-            self.errors.report(line, "Cannot find module named '{}'".format(id))
-            self.errors.report(line, '(Perhaps setting MYPYPATH '
-                                     'or using the "--silent-imports" flag would help)',
-                               severity='note', only_once=True)
-
-    def report_file(self, file: MypyFile) -> None:
-        if self.source_set.is_source(file):
-            self.reports.file(file, type_map=self.type_checker.type_map)
-
-    def log(self, *message: str) -> None:
-        if VERBOSE in self.flags:
-            print('%.3f:LOG: ' % (time.time() - self.start_time), *message, file=sys.stderr)
-            sys.stderr.flush()
-
-    def trace(self, *message: str) -> None:
-        if self.flags.count(VERBOSE) >= 2:
-            print('%.3f:TRACE:' % (time.time() - self.start_time), *message, file=sys.stderr)
-            sys.stderr.flush()
-
-
 def build(sources: List[BuildSource],
           target: int,
-          output_callback: Callable[[BuildManager], None],
+          output_callback: Callable[['BuildManager'], None],
           alt_lib_path: str = None,
           bin_dir: str = None,
           pyversion: Tuple[int, int] = defaults.PYTHON3_VERSION,
@@ -485,6 +327,164 @@ CacheMeta = NamedTuple('CacheMeta',
 # NOTE: dependencies + suppressed == all unreachable imports;
 # suppressed contains those reachable imports that were prevented by
 # --silent-imports or simply not found.
+
+
+class BuildManager:
+    """This class holds shared state for building a mypy program.
+
+    It is used to coordinate parsing, import processing, semantic
+    analysis and type checking.  The actual build steps are carried
+    out by dispatch().
+
+    Attributes:
+      data_dir:        Mypy data directory (contains stubs)
+      target:          Build target; selects which passes to perform
+      lib_path:        Library path for looking up modules
+      modules:         Mapping of module ID to MypyFile (shared by the passes)
+      semantic_analyzer:
+                       Semantic analyzer, pass 2
+      semantic_analyzer_pass3:
+                       Semantic analyzer, pass 3
+      type_checker:    Type checker
+      errors:          Used for reporting all errors
+      pyversion:       Python version (major, minor)
+      flags:           Build options
+      missing_modules: Set of modules that could not be imported encountered so far
+    """
+
+    def __init__(self, data_dir: str,
+                 lib_path: List[str],
+                 target: int,
+                 pyversion: Tuple[int, int],
+                 flags: List[str],
+                 ignore_prefix: str,
+                 custom_typing_module: str,
+                 source_set: BuildSourceSet,
+                 reports: Reports) -> None:
+        self.start_time = time.time()
+        self.data_dir = data_dir
+        self.errors = Errors()
+        self.errors.set_ignore_prefix(ignore_prefix)
+        self.lib_path = tuple(lib_path)
+        self.target = target
+        self.pyversion = pyversion
+        self.flags = flags
+        self.custom_typing_module = custom_typing_module
+        self.source_set = source_set
+        self.reports = reports
+        check_untyped_defs = CHECK_UNTYPED_DEFS in self.flags
+        self.semantic_analyzer = SemanticAnalyzer(lib_path, self.errors,
+                                                  pyversion=pyversion,
+                                                  check_untyped_defs=check_untyped_defs)
+        self.modules = self.semantic_analyzer.modules
+        self.semantic_analyzer_pass3 = ThirdPass(self.modules, self.errors)
+        self.type_checker = TypeChecker(self.errors,
+                                        self.modules,
+                                        self.pyversion,
+                                        DISALLOW_UNTYPED_CALLS in self.flags,
+                                        DISALLOW_UNTYPED_DEFS in self.flags,
+                                        check_untyped_defs)
+        self.missing_modules = set()  # type: Set[str]
+
+    def all_imported_modules_in_file(self,
+                                     file: MypyFile) -> List[Tuple[str, int]]:
+        """Find all reachable import statements in a file.
+
+        Return list of tuples (module id, import line number) for all modules
+        imported in file.
+        """
+        def correct_rel_imp(imp: Union[ImportFrom, ImportAll]) -> str:
+            """Function to correct for relative imports."""
+            file_id = file.fullname()
+            rel = imp.relative
+            if rel == 0:
+                return imp.id
+            if os.path.basename(file.path).startswith('__init__.'):
+                rel -= 1
+            if rel != 0:
+                file_id = ".".join(file_id.split(".")[:-rel])
+            new_id = file_id + "." + imp.id if imp.id else file_id
+
+            return new_id
+
+        res = []  # type: List[Tuple[str, int]]
+        for imp in file.imports:
+            if not imp.is_unreachable:
+                if isinstance(imp, Import):
+                    for id, _ in imp.ids:
+                        res.append((id, imp.line))
+                elif isinstance(imp, ImportFrom):
+                    cur_id = correct_rel_imp(imp)
+                    pos = len(res)
+                    all_are_submodules = True
+                    # Also add any imported names that are submodules.
+                    for name, __ in imp.names:
+                        sub_id = cur_id + '.' + name
+                        if self.is_module(sub_id):
+                            res.append((sub_id, imp.line))
+                        else:
+                            all_are_submodules = False
+                    # If all imported names are submodules, don't add
+                    # cur_id as a dependency.  Otherwise (i.e., if at
+                    # least one imported name isn't a submodule)
+                    # cur_id is also a dependency, and we should
+                    # insert it *before* any submodules.
+                    if not all_are_submodules:
+                        res.insert(pos, ((cur_id, imp.line)))
+                elif isinstance(imp, ImportAll):
+                    res.append((correct_rel_imp(imp), imp.line))
+        return res
+
+    def is_module(self, id: str) -> bool:
+        """Is there a file in the file system corresponding to module id?"""
+        return find_module(id, self.lib_path) is not None
+
+    def parse_file(self, id: str, path: str, source: str) -> MypyFile:
+        """Parse the source of a file with the given name.
+
+        Raise CompileError if there is a parse error.
+        """
+        num_errs = self.errors.num_messages()
+        tree = parse(source, path, self.errors,
+                     pyversion=self.pyversion,
+                     custom_typing_module=self.custom_typing_module,
+                     fast_parser=FAST_PARSER in self.flags)
+        tree._fullname = id
+        if self.errors.num_messages() != num_errs:
+            self.log("Bailing due to parse errors")
+            self.errors.raise_error()
+        return tree
+
+    def module_not_found(self, path: str, line: int, id: str) -> None:
+        self.errors.set_file(path)
+        stub_msg = "(Stub files are from https://github.com/python/typeshed)"
+        if ((self.pyversion[0] == 2 and moduleinfo.is_py2_std_lib_module(id)) or
+                (self.pyversion[0] >= 3 and moduleinfo.is_py3_std_lib_module(id))):
+            self.errors.report(
+                line, "No library stub file for standard library module '{}'".format(id))
+            self.errors.report(line, stub_msg, severity='note', only_once=True)
+        elif moduleinfo.is_third_party_module(id):
+            self.errors.report(line, "No library stub file for module '{}'".format(id))
+            self.errors.report(line, stub_msg, severity='note', only_once=True)
+        else:
+            self.errors.report(line, "Cannot find module named '{}'".format(id))
+            self.errors.report(line, '(Perhaps setting MYPYPATH '
+                                     'or using the "--silent-imports" flag would help)',
+                               severity='note', only_once=True)
+
+    def report_file(self, file: MypyFile) -> None:
+        if self.source_set.is_source(file):
+            self.reports.file(file, type_map=self.type_checker.type_map)
+
+    def log(self, *message: str) -> None:
+        if VERBOSE in self.flags:
+            print('%.3f:LOG: ' % (time.time() - self.start_time), *message, file=sys.stderr)
+            sys.stderr.flush()
+
+    def trace(self, *message: str) -> None:
+        if self.flags.count(VERBOSE) >= 2:
+            print('%.3f:TRACE:' % (time.time() - self.start_time), *message, file=sys.stderr)
+            sys.stderr.flush()
 
 
 def remove_cwd_prefix_from_path(p: str) -> str:
@@ -1378,6 +1378,108 @@ def load_graph(sources: List[BuildSource], manager: BuildManager) -> Graph:
     return graph
 
 
+def process_scc(
+        graph: Graph,
+        a_scc: AbstractSet[Any],
+        manager: BuildManager,
+        output_callback: Callable[[BuildManager], None]) -> None:
+    """Given a strongly connected compnent run the type checker on the entire component.
+
+    NOTE: part of why this function is here rather than all in process_graph is for
+        ease of testing. Making them separate functions makes wrapping the start and
+        end of processing a strongly connected component easier.
+
+    Returns: None, modifies the internal state of the passed in manager.
+
+    Args:
+        graph: The Entire dependency graph
+        a_scc: A list of python modules that make up a strong connected component. the
+            basic idea is python modules that make up a cyclic or acyclic import graph.
+        manager: State object that holds all processed output
+        output_callback: A callback that's called at the end of processing who's job is
+            to stream output to a source (normal stdout).
+    """
+    # Sort the SCC's nodes in *reverse* order or encounter.
+    # This is a heuristic for handling import cycles.
+    # Note that a_scc is a set, and scc is a list.
+    scc = sorted(a_scc, key=lambda id: -graph[id].order)
+    # If builtins is in the list, move it last.  (This is a bit of
+    # a hack, but it's necessary because the builtins module is
+    # part of a small cycle involving at least {builtins, abc,
+    # typing}.  Of these, builtins must be processed last or else
+    # some builtin objects will be incompletely processed.)
+    if 'builtins' in a_scc:
+        scc.remove('builtins')
+        scc.append('builtins')
+    # Because the SCCs are presented in topological sort order, we
+    # don't need to look at dependencies recursively for staleness
+    # -- the immediate dependencies are sufficient.
+    stale_scc = {id for id in scc if not graph[id].is_fresh()}
+    fresh = not stale_scc
+    deps = set()
+    for id in scc:
+        deps.update(graph[id].dependencies)
+    deps -= a_scc
+    stale_deps = {id for id in deps if not graph[id].is_fresh()}
+    fresh = fresh and not stale_deps
+    undeps = set()
+    if fresh:
+        # Check if any dependencies that were suppressed according
+        # to the cache have heen added back in this run.
+        # NOTE: Newly suppressed dependencies are handled by is_fresh().
+        for id in scc:
+            undeps.update(graph[id].suppressed)
+        undeps &= graph.keys()
+        if undeps:
+            fresh = False
+    if fresh:
+        # All cache files are fresh.  Check that no dependency's
+        # cache file is newer than any scc node's cache file.
+        oldest_in_scc = min(graph[id].meta.data_mtime for id in scc)
+        newest_in_deps = 0 if not deps else max(graph[dep].meta.data_mtime for dep in deps)
+        if manager.flags.count(VERBOSE) >= 2:  # Dump all mtimes for extreme debugging.
+            all_ids = sorted(a_scc | deps, key=lambda id: graph[id].meta.data_mtime)
+            for id in all_ids:
+                if id in scc:
+                    if graph[id].meta.data_mtime < newest_in_deps:
+                        key = "*id:"
+                    else:
+                        key = "id:"
+                else:
+                    if graph[id].meta.data_mtime > oldest_in_scc:
+                        key = "+dep:"
+                    else:
+                        key = "dep:"
+                manager.trace(" %5s %.0f %s" % (key, graph[id].meta.data_mtime, id))
+        # If equal, give the benefit of the doubt, due to 1-sec time granularity
+        # (on some platforms).
+        if oldest_in_scc < newest_in_deps:
+            fresh = False
+            fresh_msg = "out of date by %.0f seconds" % (newest_in_deps - oldest_in_scc)
+        else:
+            fresh_msg = "fresh"
+    elif undeps:
+        fresh_msg = "stale due to changed suppression (%s)" % " ".join(sorted(undeps))
+    elif stale_scc:
+        fresh_msg = "inherently stale (%s)" % " ".join(sorted(stale_scc))
+        if stale_deps:
+            fresh_msg += " with stale deps (%s)" % " ".join(sorted(stale_deps))
+    else:
+        fresh_msg = "stale due to deps (%s)" % " ".join(sorted(stale_deps))
+    if len(scc) == 1:
+        manager.log("Processing SCC singleton (%s) as %s" % (" ".join(scc), fresh_msg))
+    else:
+        manager.log("Processing SCC of size %d (%s) as %s" %
+                    (len(scc), " ".join(scc), fresh_msg))
+    if fresh:
+        process_fresh_scc(graph, scc)
+    else:
+        process_stale_scc(graph, scc)
+
+    # Call output callback function here
+    output_callback(manager)
+
+
 def process_graph(
         graph: Graph,
         manager: BuildManager,
@@ -1389,86 +1491,8 @@ def process_graph(
     # We're processing SCCs from leaves (those without further
     # dependencies) to roots (those from which everything else can be
     # reached).
-    for ascc in sccs:
-        # Sort the SCC's nodes in *reverse* order or encounter.
-        # This is a heuristic for handling import cycles.
-        # Note that ascc is a set, and scc is a list.
-        scc = sorted(ascc, key=lambda id: -graph[id].order)
-        # If builtins is in the list, move it last.  (This is a bit of
-        # a hack, but it's necessary because the builtins module is
-        # part of a small cycle involving at least {builtins, abc,
-        # typing}.  Of these, builtins must be processed last or else
-        # some builtin objects will be incompletely processed.)
-        if 'builtins' in ascc:
-            scc.remove('builtins')
-            scc.append('builtins')
-        # Because the SCCs are presented in topological sort order, we
-        # don't need to look at dependencies recursively for staleness
-        # -- the immediate dependencies are sufficient.
-        stale_scc = {id for id in scc if not graph[id].is_fresh()}
-        fresh = not stale_scc
-        deps = set()
-        for id in scc:
-            deps.update(graph[id].dependencies)
-        deps -= ascc
-        stale_deps = {id for id in deps if not graph[id].is_fresh()}
-        fresh = fresh and not stale_deps
-        undeps = set()
-        if fresh:
-            # Check if any dependencies that were suppressed according
-            # to the cache have heen added back in this run.
-            # NOTE: Newly suppressed dependencies are handled by is_fresh().
-            for id in scc:
-                undeps.update(graph[id].suppressed)
-            undeps &= graph.keys()
-            if undeps:
-                fresh = False
-        if fresh:
-            # All cache files are fresh.  Check that no dependency's
-            # cache file is newer than any scc node's cache file.
-            oldest_in_scc = min(graph[id].meta.data_mtime for id in scc)
-            newest_in_deps = 0 if not deps else max(graph[dep].meta.data_mtime for dep in deps)
-            if manager.flags.count(VERBOSE) >= 2:  # Dump all mtimes for extreme debugging.
-                all_ids = sorted(ascc | deps, key=lambda id: graph[id].meta.data_mtime)
-                for id in all_ids:
-                    if id in scc:
-                        if graph[id].meta.data_mtime < newest_in_deps:
-                            key = "*id:"
-                        else:
-                            key = "id:"
-                    else:
-                        if graph[id].meta.data_mtime > oldest_in_scc:
-                            key = "+dep:"
-                        else:
-                            key = "dep:"
-                    manager.trace(" %5s %.0f %s" % (key, graph[id].meta.data_mtime, id))
-            # If equal, give the benefit of the doubt, due to 1-sec time granularity
-            # (on some platforms).
-            if oldest_in_scc < newest_in_deps:
-                fresh = False
-                fresh_msg = "out of date by %.0f seconds" % (newest_in_deps - oldest_in_scc)
-            else:
-                fresh_msg = "fresh"
-        elif undeps:
-            fresh_msg = "stale due to changed suppression (%s)" % " ".join(sorted(undeps))
-        elif stale_scc:
-            fresh_msg = "inherently stale (%s)" % " ".join(sorted(stale_scc))
-            if stale_deps:
-                fresh_msg += " with stale deps (%s)" % " ".join(sorted(stale_deps))
-        else:
-            fresh_msg = "stale due to deps (%s)" % " ".join(sorted(stale_deps))
-        if len(scc) == 1:
-            manager.log("Processing SCC singleton (%s) as %s" % (" ".join(scc), fresh_msg))
-        else:
-            manager.log("Processing SCC of size %d (%s) as %s" %
-                        (len(scc), " ".join(scc), fresh_msg))
-        if fresh:
-            process_fresh_scc(graph, scc)
-        else:
-            process_stale_scc(graph, scc)
-
-        # Call output callback function here
-        output_callback(manager)
+    for a_scc in sccs:
+        process_scc(graph, a_scc, manager, output_callback)
 
 
 def process_fresh_scc(graph: Graph, scc: List[str]) -> None:
