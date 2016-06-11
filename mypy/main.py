@@ -11,7 +11,7 @@ from mypy import build
 from mypy import defaults
 from mypy import git
 from mypy.build import BuildSource, BuildResult, PYTHON_EXTENSIONS
-from mypy.errors import CompileError, set_drop_into_pdb
+from mypy.errors import Errors, CompileError, set_drop_into_pdb
 
 from mypy.version import __version__
 
@@ -59,10 +59,12 @@ def main(script_path: str) -> None:
         a = e.messages
         if not e.use_stdout:
             f = sys.stderr
-    if a:
-        for m in a:
-            f.write(m + '\n')
-        sys.exit(1)
+
+        # For now CompileErrors will print in main.
+        if a:
+            for m in a:
+                f.write(m + '\n')
+            sys.exit(1)
 
 
 def flush_error_and_reset(target_manager):
@@ -80,12 +82,16 @@ def flush_error_and_reset(target_manager):
             have been found.
             NOTE: this object will be modified by this function so that errors aren't reported
                 twice
+
+    NOTE: This function is coupled to the BuildManager class and the Errors class.
     """
-    pass
-    # BuildResult(current_manager)
-    # call check_blockers
-    # print all errors in current_manager)
-    # current_manager.errors = Error()
+    output_stream = sys.stdout
+    messages = target_manager.errors.messages()
+    for message in messages:
+        output_stream.write("{}\n".format(message))
+
+    # NOTE: Potentially there needs to be a section here that removes printed messages from
+    # the manager. Unsure if necessary at this point.
 
 
 def find_bin_directory(script_path: str) -> str:

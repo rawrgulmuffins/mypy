@@ -114,6 +114,7 @@ class TypeCheckSuite(Suite):
         source = BuildSource(program_name, module_name, program_text)
         flush_output = 'flushoutput' in testcase.name.lower()
         if flush_output:
+            # NOTE: Potentially this functionality should be in it's own test.
 
             def wrapped_callback(manager):
                 """Helper function that turns DUMP_INFER_STATS on in the manager
@@ -129,10 +130,10 @@ class TypeCheckSuite(Suite):
                     # and should fail
                     manager.flags.remove(build.DUMP_INFER_STATS)
 
-            # Capture sys.stderr
+            # Capture sys.stdout
             # TODO: turn redirct into a context manager.
-            old_stderr = sys.stderr
-            sys.stderr = mystderr = io.StringIO()
+            old_stdout = sys.stdout
+            sys.stdout = mystdout = io.StringIO()
 
             # Testing the standard call back from main.py
             build.build(target=build.TYPE_CHECK,
@@ -165,15 +166,15 @@ class TypeCheckSuite(Suite):
                 a_errors=file_a_errors,
                 b_errors=file_b_errors)
 
-            actual_result = mystderr.read()
+            actual_result = mystdout.read()
             if actual_result != expected_output:
-                print(actual_result)
-                print("===============")
-                print(expected_output)
-                raise AssertionFailure(mystderr)
+                print(actual_result, file=sys.stderr)
+                print("===============", file=sys.stderr)
+                print(expected_output, file=sys.stderr)
+                raise AssertionFailure(actual_result)
 
-            sys.stderr = old_stderr
-            # return None
+            sys.stdout = old_stdout
+            return None
 
         try:
             # Avoding a MYPY bug (issue 1425)
