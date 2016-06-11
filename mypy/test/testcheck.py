@@ -121,8 +121,13 @@ class TypeCheckSuite(Suite):
                 has been done before and after output is returned.
                 """
                 # We're going to use the inferred stats as a sential value.
-                manager.flags.append(build.DUMP_INFER_STATS)
-                flush_error_and_reset(manager)
+                try:
+                    manager.flags.append(build.DUMP_INFER_STATS)
+                    flush_error_and_reset(manager)
+                finally:
+                    # This can throw a value error but if it does the test is faulty
+                    # and should fail
+                    manager.flags.remove(build.DUMP_INFER_STATS)
 
             # Capture sys.stderr
             # TODO: turn redirct into a context manager.
@@ -137,12 +142,35 @@ class TypeCheckSuite(Suite):
                         flags=flags + [build.TEST_BUILTINS],
                         alt_lib_path=test_temp_dir)
 
-            # assert that we hit DUMP_INFER_STATS output
-            raise AssertionFailure("testing")
-            assert mystderr
-            # assert that we get B output
-            # assert that we hit DUMP_INFER_STATS output
-            # assert that we get A output
+            # Since we turned DUMP_INFERT_STATS on we expect this to be the first output.
+            # If we don't see it between output results it means we aren't streaming results.
+            sentinal_value = """main
+            ** precision **
+            precise   0
+            imprecise 0
+            any       0
+            ** kinds **
+            simple    0
+            generic   0
+            function  0
+            tuple     0
+            TypeVar   0
+            complex   0
+            any       0"""
+            file_a_errors = 'a.py:1: error: "int" not callable'
+            file_b_errors = 'b.py:1: error: "int" not callable'
+
+            expected_output = "{sentinal}\n{a_errors}\n{sentinal}\n{b_errors}".format(
+                sentinal=sentinal_value,
+                a_errors=file_a_errors,
+                b_errors=file_b_errors)
+
+            actual_result = mystderr.read()
+            if actual_result != expected_output:
+                print(actual_result)
+                print("===============")
+                print(expected_output)
+                raise AssertionFailure(mystderr)
 
             sys.stderr = old_stderr
             # return None
