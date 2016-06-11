@@ -1,0 +1,15 @@
+-- SCC: stands for Strongly connnected component.
+-- TODO: explain why this is here.
+[case testFlushOutput]
+[file a.py]
+1()
+
+[file b.py]
+Import a
+2()
+
+[out]
+-- Sentianl value
+-- B output
+-- A sentianl value which ensures that B computation is done
+-- A output
